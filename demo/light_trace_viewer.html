@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ASearcher Light Trace Viewer</title>
+  <link rel="stylesheet" href="/light_trace_viewer.css" />
+</head>
+<body>
+  <div class="trace-app">
+    <aside class="episode-list-panel">
+      <div class="panel-header">
+        <h1>Trace Viewer</h1>
+        <button id="refreshButton">Refresh</button>
+      </div>
+      <p class="muted">Inspect rollout traces and discard reasons without W&B.</p>
+      <div id="episodeList" class="episode-list"></div>
+    </aside>
+    <main class="episode-detail-panel">
+      <div id="episodeSummary" class="empty-state">Select a trace to inspect.</div>
+      <div id="trajectoryTabs" class="trajectory-tabs"></div>
+      <div id="trajectoryDetail" class="trajectory-detail"></div>
+    </main>
+  </div>
+  <script src="/light_trace_viewer.js"></script>
+</body>
+</html>

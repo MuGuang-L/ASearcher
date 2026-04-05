@@ -1,0 +1,147 @@
+.trace-app {
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  min-height: 100vh;
+  background: #f3efe7;
+  color: #231f1a;
+}
+
+.episode-list-panel,
+.episode-detail-panel {
+  padding: 20px;
+}
+
+.episode-list-panel {
+  border-right: 1px solid #d8ccb8;
+  background: #efe6d8;
+  overflow-y: auto;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.episode-list,
+.trajectory-detail,
+.steps {
+  display: grid;
+  gap: 12px;
+}
+
+.episode-item,
+.traj-tab,
+#refreshButton {
+  border: 1px solid #b48b5d;
+  background: #fffaf2;
+  color: inherit;
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.episode-item.active,
+.traj-tab.active {
+  background: #cb7d2f;
+  border-color: #cb7d2f;
+  color: white;
+}
+
+.episode-title {
+  font-weight: 700;
+}
+
+.episode-meta,
+.episode-scores,
+.episode-reason,
+.muted {
+  color: #6e5e4f;
+  font-size: 13px;
+}
+
+.episode-item.active .episode-meta,
+.episode-item.active .episode-scores,
+.episode-item.active .episode-reason {
+  color: rgba(255,255,255,0.9);
+}
+
+.episode-question {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.summary-grid > div,
+.question-block,
+.penalty-box,
+.answer-box,
+.step-card,
+.empty-state {
+  background: #fffaf2;
+  border: 1px solid #d8ccb8;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.summary-grid strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.trajectory-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.step-header {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  color: #7d6f61;
+  margin-bottom: 8px;
+}
+
+.step-row {
+  margin-bottom: 10px;
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+@media (max-width: 960px) {
+  .trace-app {
+    grid-template-columns: 1fr;
+  }
+
+  .episode-list-panel {
+    border-right: none;
+    border-bottom: 1px solid #d8ccb8;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+}
