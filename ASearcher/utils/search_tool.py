@@ -2,7 +2,7 @@
 import json
 from typing import List, Tuple
 
-from realhf.base import logging
+from areal.utils import logging
 from ASearcher.utils.rewards import compute_score_em, compute_score_f1
 
 from ASearcher.utils.search_utils import make_search_client

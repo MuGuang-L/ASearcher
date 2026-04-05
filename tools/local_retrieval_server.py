@@ -406,12 +406,13 @@ if __name__ == "__main__":
     parser.add_argument("--retriever_model", type=str, default="intfloat/e5-base-v2", help="Path of the retriever model.")
     parser.add_argument('--faiss_gpu', action='store_true', help='Use GPU for computation')
     parser.add_argument("--port", type=int, default=5005)
+    parser.add_argument("--host", type=str, default=None, help="Host to bind the server.")
     parser.add_argument("--save-address-to", type=str, help="path to save server address")
 
     args = parser.parse_args()
 
     host_name=socket.gethostname()
-    host_ip=socket.gethostbyname(socket.gethostname())
+    host_ip=args.host or socket.gethostbyname(socket.gethostname())
     port = args.port
 
     host_addr = f"{host_ip}:{port}"
@@ -458,4 +459,3 @@ if __name__ == "__main__":
     )
     http_server = uvicorn.Server(config)
     http_server.run()
-

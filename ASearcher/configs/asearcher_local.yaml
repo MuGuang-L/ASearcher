@@ -137,7 +137,7 @@ launcher:
   inference_server_mem_per_gpu: 153600
   trainer_cpus_per_gpu: 15
   trainer_mem_per_gpu: 153600
-  trainer_env_vars: PYTHONPATH=path_to_asearcher:path_to_areal,WANDB_API_KEY=your_wandb_api_key,RAG_SERVER_ADDR_DIR=directory_of_rag_server_addrs
+  trainer_env_vars: PYTHONPATH=/home/ubuntu/ASearcher:/home/ubuntu/ASearcher/AReaL,RAG_SERVER_ADDR_DIR=/tmp/areal/rag_server_addrs
   
 
 max_turns: 32

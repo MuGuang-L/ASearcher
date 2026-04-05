@@ -77,6 +77,71 @@ Our analysis reveals significant **variance in the execution time of agent traje
  
 
 # Quick Start
+## Repository Layout
+
+This repository now assumes a colocated checkout of AReaL at:
+
+```txt
+/home/ubuntu/ASearcher/AReaL
+```
+
+The local configs under `ASearcher/configs/` are patched to use:
+
+```txt
+PYTHONPATH=/home/ubuntu/ASearcher:/home/ubuntu/ASearcher/AReaL
+```
+
+Useful entrypoints:
+
+- `scripts/run_light_local.sh`: launch the lightweight local training path
+- `scripts/run_areal_docker.sh`: open the official AReaL runtime container with this repo mounted at `/workspace/ASearcher`
+- `scripts/build_index.sh`: build a local wiki retrieval index
+- `scripts/launch_local_server.sh`: launch the local retrieval server
+
+Repository evolution notes:
+
+- `docs/repo_direction.md`: current direction for turning this checkout into a maintainable RL repository
+- `docs/container_workflow.md`: container-first development workflow, including in-container Codex usage
+- `HANDOFF_DOCKER_AND_NEXT_STEPS.md`: latest infrastructure/runtime handoff for continuing inside the container
+
+
+## Lightweight Local Training
+
+Minimal local workflow for the lightweight path:
+
+```bash
+cd /home/ubuntu/ASearcher
+
+# 1. Build a local wiki index.
+WIKI2018_WORK_DIR=/path/to/wiki2018 \
+bash scripts/build_index.sh
+
+# 2. Launch the local retrieval server.
+WIKI2018_WORK_DIR=/path/to/wiki2018 \
+bash scripts/launch_local_server.sh 8766 /tmp/areal/rag_server_addrs
+
+# 3. Launch lightweight RL training.
+bash scripts/run_light_local.sh \
+  /home/ubuntu/ASearcher/ASearcher/configs/asearcher_local_light_qwen3.yaml \
+  /path/to/training_data.jsonl \
+  Qwen/Qwen3-1.7B \
+  asearcher-light-local \
+  run1
+```
+
+The default lightweight configs assume:
+
+```txt
+RAG_SERVER_ADDR_DIR=/tmp/areal/rag_server_addrs
+```
+
+For containerized execution after Docker is installed:
+
+```bash
+cd /home/ubuntu/ASearcher
+bash scripts/run_areal_docker.sh
+```
+
 ## Evaluation
 To reproduce the results presented in Fig.2, please run the following script.
 

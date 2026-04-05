@@ -17,25 +17,25 @@ The intended use case is a project-oriented, lightweight variant of `ASearcher` 
 
 ### Lightweight training path
 
-- [ASearcher/train/search_agent_light.py](/Users/longjianhao/mo/ASearcher/ASearcher/train/search_agent_light.py)
-- [ASearcher/train/asearcher_light.py](/Users/longjianhao/mo/ASearcher/ASearcher/train/asearcher_light.py)
+- [ASearcher/train/search_agent_light.py](/home/ubuntu/ASearcher/ASearcher/train/search_agent_light.py)
+- [ASearcher/train/asearcher_light.py](/home/ubuntu/ASearcher/ASearcher/train/asearcher_light.py)
 
 ### Lightweight configs
 
-- [ASearcher/configs/asearcher_local_light.yaml](/Users/longjianhao/mo/ASearcher/ASearcher/configs/asearcher_local_light.yaml)
-- [ASearcher/configs/asearcher_local_light_flexible.yaml](/Users/longjianhao/mo/ASearcher/ASearcher/configs/asearcher_local_light_flexible.yaml)
-- [ASearcher/configs/asearcher_local_light_qwen3.yaml](/Users/longjianhao/mo/ASearcher/ASearcher/configs/asearcher_local_light_qwen3.yaml)
+- [ASearcher/configs/asearcher_local_light.yaml](/home/ubuntu/ASearcher/ASearcher/configs/asearcher_local_light.yaml)
+- [ASearcher/configs/asearcher_local_light_flexible.yaml](/home/ubuntu/ASearcher/ASearcher/configs/asearcher_local_light_flexible.yaml)
+- [ASearcher/configs/asearcher_local_light_qwen3.yaml](/home/ubuntu/ASearcher/ASearcher/configs/asearcher_local_light_qwen3.yaml)
 
 ### Qwen3 note
 
-- [docs/qwen3_light_notes.md](/Users/longjianhao/mo/ASearcher/docs/qwen3_light_notes.md)
+- [docs/qwen3_light_notes.md](/home/ubuntu/ASearcher/docs/qwen3_light_notes.md)
 
 ### Trace viewer
 
-- [demo/light_trace_server.py](/Users/longjianhao/mo/ASearcher/demo/light_trace_server.py)
-- [demo/light_trace_viewer.html](/Users/longjianhao/mo/ASearcher/demo/light_trace_viewer.html)
-- [demo/light_trace_viewer.js](/Users/longjianhao/mo/ASearcher/demo/light_trace_viewer.js)
-- [demo/light_trace_viewer.css](/Users/longjianhao/mo/ASearcher/demo/light_trace_viewer.css)
+- [demo/light_trace_server.py](/home/ubuntu/ASearcher/demo/light_trace_server.py)
+- [demo/light_trace_viewer.html](/home/ubuntu/ASearcher/demo/light_trace_viewer.html)
+- [demo/light_trace_viewer.js](/home/ubuntu/ASearcher/demo/light_trace_viewer.js)
+- [demo/light_trace_viewer.css](/home/ubuntu/ASearcher/demo/light_trace_viewer.css)
 
 ## What Was Changed
 
@@ -160,7 +160,7 @@ This uses smaller generation length than the generic lightweight config because 
 
 ## Qwen3 Note
 
-The important point from [docs/qwen3_light_notes.md](/Users/longjianhao/mo/ASearcher/docs/qwen3_light_notes.md):
+The important point from [docs/qwen3_light_notes.md](/home/ubuntu/ASearcher/docs/qwen3_light_notes.md):
 
 - the current lightweight training path does **not** use `tokenizer.apply_chat_template(..., enable_thinking=...)`
 - it directly tokenizes prompt strings
@@ -205,6 +205,81 @@ python3 -m areal.launcher.local ASearcher/train/asearcher_light.py \
   experiment_name=asearcher-light-qwen3 \
   trial_name=run1
 ```
+
+## Practical Runbook On This Machine
+
+The commands above are conceptual examples. On this machine, the reliable startup
+path is:
+
+1. Start the Docker runtime container:
+
+```bash
+cd /workspace/ASearcher
+bash scripts/run_areal_docker.sh
+```
+
+2. Verify CUDA is visible:
+
+```bash
+python3 - <<'PY'
+import torch
+print(torch.cuda.is_available(), torch.cuda.device_count())
+PY
+```
+
+3. Log into Weights & Biases once:
+
+```bash
+wandb login
+```
+
+4. Start the local retrieval server in one terminal:
+
+```bash
+RETRIEVER_MODEL=/workspace/ASearcher/models/e5-base-v2 \
+WIKI2018_WORK_DIR=/workspace/ASearcher/data/wiki2018_smoke \
+bash scripts/launch_local_server.sh 8766 /tmp/areal/rag_server_addrs
+```
+
+5. Start lightweight Qwen3 training in another terminal:
+
+```bash
+bash scripts/run_light_local.sh \
+  /workspace/ASearcher/ASearcher/configs/asearcher_local_light_qwen3.yaml \
+  /workspace/ASearcher/data/train_data/ASearcher-Base-35k.sample_10000.jsonl \
+  /workspace/ASearcher/models/Qwen3-1.7B \
+  asearcher-light-qwen3 \
+  run1
+```
+
+6. Start the trace viewer in a third terminal:
+
+```bash
+python3 demo/light_trace_server.py \
+  --trace-dir /tmp/areal/experiments/logs/root/asearcher-light-qwen3/run1/generated \
+  --host 127.0.0.1 \
+  --port 8765
+```
+
+Then open:
+
+```txt
+http://127.0.0.1:8765
+```
+
+### Important Local Pitfalls Already Fixed
+
+- Use the local model path `/workspace/ASearcher/models/Qwen3-1.7B`, not
+  `Qwen/Qwen3-1.7B`, unless that HF-style path actually exists in the runtime.
+- Use the local retriever path `/workspace/ASearcher/models/e5-base-v2` for the
+  retrieval server.
+- `scripts/run_light_local.sh` and `scripts/launch_local_server.sh` now clear
+  proxy env vars so localhost traffic does not get misrouted through forwarded
+  proxies.
+- `ASearcher/configs/asearcher_local_light_qwen3.yaml` is now set to
+  `stats_logger.wandb.mode=online`.
+- The current lightweight prompt / reward setup was adjusted to discourage
+  unsupported direct answering without retrieval evidence.
 
 ### Launch local trace viewer
 
@@ -253,5 +328,5 @@ If work continues in a new conversation, the most useful follow-ups are:
 If starting a new conversation, paste something like:
 
 ```txt
-Continue from /Users/longjianhao/mo/ASearcher/HANDOFF_ASEARCHER_LIGHT.md and help me run/tune the lightweight ASearcher path on my server.
+Continue from /home/ubuntu/ASearcher/HANDOFF_ASEARCHER_LIGHT.md and help me run/tune the lightweight ASearcher path on my server.
 ```

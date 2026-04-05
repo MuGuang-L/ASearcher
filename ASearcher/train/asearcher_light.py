@@ -17,26 +17,35 @@ import torch.distributed as dist
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import PreTrainedTokenizerFast
 
+from areal.api.alloc_mode import _AllocationMode
 from areal.api.cli_args import GRPOConfig, GenerationHyperparameters, load_expr_config
 from areal.api.io_struct import (
-    AllocationMode,
     FinetuneSpec,
     ModelRequest,
     StepInfo,
     WeightUpdateMeta,
 )
 from areal.api.workflow_api import RolloutWorkflow
-from areal.engine.ppo.actor import FSDPPPOActor
+from areal.engine.fsdp_engine import FSDPPPOActor
 from areal.engine.sglang_remote import RemoteSGLangEngine
-from areal.platforms import current_platform
+from areal import current_platform
 from areal.utils import logging, seeding, stats_tracker
-from areal.utils.data import broadcast_tensor_container, concat_padded_tensors, cycle_dataloader
-from areal.utils.device import log_gpu_stats
+from areal.utils.data import (
+    broadcast_tensor_container,
+    concat_padded_tensors,
+    cycle_dataloader,
+    tensor_container_to,
+)
 from areal.utils.evaluator import Evaluator
 from areal.utils.hf_utils import load_hf_tokenizer
 from areal.utils.recover import RecoverHandler
 from areal.utils.saver import Saver
 from areal.utils.stats_logger import StatsLogger
+try:
+    from areal.utils.device import log_gpu_stats
+except ImportError:
+    def log_gpu_stats(*args, **kwargs):
+        return None
 
 from ASearcher.train.prompts import (
     INVALID_PROMPT,
@@ -70,7 +79,7 @@ class ASearcherLightWorkflow(RolloutWorkflow):
         topk: int = 3,
         valid_inst_ratio: float = 1.0,
         max_tokens: int = 8192,
-        search_only: bool = True,
+        search_only: bool = False,
         max_doc_chars: int = 1200,
         max_page_total_chars: int = 30000,
         max_page_chunk_chars: int = 6000,
@@ -80,6 +89,8 @@ class ASearcherLightWorkflow(RolloutWorkflow):
         search_step_penalty: float = 0.0,
         access_step_penalty: float = 0.0,
         repeated_action_penalty: float = 0.0,
+        no_evidence_penalty: float = 0.2,
+        no_access_penalty: float = 0.1,
     ):
         self.gconfig = gconfig
         self.gconfig.n_samples = 1
@@ -104,6 +115,8 @@ class ASearcherLightWorkflow(RolloutWorkflow):
         self.search_step_penalty = search_step_penalty
         self.access_step_penalty = access_step_penalty
         self.repeated_action_penalty = repeated_action_penalty
+        self.no_evidence_penalty = no_evidence_penalty
+        self.no_access_penalty = no_access_penalty
         if self.dump_dir is not None and not os.path.exists(self.dump_dir):
             os.makedirs(self.dump_dir, exist_ok=True)
 
@@ -123,7 +136,9 @@ class ASearcherLightWorkflow(RolloutWorkflow):
         with open(trace_path, "w") as file_obj:
             json.dump(payload, file_obj, ensure_ascii=False, indent=2)
 
-    async def collect_agent_trajectory(self, valid_inst, qid, prompt, prompt_token_ids, engine):
+    async def collect_agent_trajectory(
+        self, valid_inst, qid, prompt, prompt_token_ids, engine, traj_idx: int
+    ):
         agent = SearchAgentLight(prompt, prompt_token_ids, **self.agent_kwargs)
         score = 0.0
         ground_truth = None
@@ -134,6 +149,13 @@ class ASearcherLightWorkflow(RolloutWorkflow):
         repeat_calls = 0
         step_events = []
         terminated_reason = "max_turns_or_finished"
+        logger.info(
+            "Rollout start qid=%s traj=%s valid_inst=%s max_turns=%s",
+            qid,
+            traj_idx,
+            valid_inst,
+            self.max_turns,
+        )
 
         while agent.num_turns < self.max_turns and not agent.is_finished:
             input_ids, sampling_params = agent.prepare_llm_query(self.tokenizer)
@@ -146,8 +168,23 @@ class ASearcherLightWorkflow(RolloutWorkflow):
                 req.gconfig.stop = sampling_params["stop"]
             if len(input_ids) + self.gconfig.max_new_tokens >= self.max_tokens:
                 terminated_reason = "max_token_budget"
+                logger.info(
+                    "Rollout stop qid=%s traj=%s turn=%s reason=max_token_budget input_tokens=%s",
+                    qid,
+                    traj_idx,
+                    agent.num_turns,
+                    len(input_ids),
+                )
                 break
 
+            logger.info(
+                "Rollout gen qid=%s traj=%s turn=%s input_tokens=%s stop=%s",
+                qid,
+                traj_idx,
+                agent.num_turns,
+                len(input_ids),
+                sampling_params.get("stop", []),
+            )
             resp = await engine.agenerate(req)
             completion_str = self.tokenizer.decode(resp.output_tokens)
             tool_calls = agent.consume_llm_response(resp, completion_str)
@@ -165,6 +202,14 @@ class ASearcherLightWorkflow(RolloutWorkflow):
 
             if tool_calls:
                 tool_call = tool_calls[0]
+                logger.info(
+                    "Rollout tool qid=%s traj=%s turn=%s tool=%s output_tokens=%s",
+                    qid,
+                    traj_idx,
+                    agent.num_turns,
+                    tool_call,
+                    len(resp.output_tokens),
+                )
                 normalized_call = tool_call.strip().lower()
                 if normalized_call in seen_actions:
                     repeat_calls += 1
@@ -177,6 +222,16 @@ class ASearcherLightWorkflow(RolloutWorkflow):
 
                 res = (await self.toolbox.step((qid, [tool_call])))[0]
                 agent.consume_tool_response(res, topk=self.topk)
+                logger.info(
+                    "Rollout tool-result qid=%s traj=%s turn=%s type=%s score=%s has_page=%s docs=%s",
+                    qid,
+                    traj_idx,
+                    agent.num_turns,
+                    res.get("type"),
+                    res.get("score"),
+                    bool(res.get("page")),
+                    len(res.get("documents") or []),
+                )
                 event["tool_call"] = tool_call
                 event["tool_result_type"] = res.get("type")
                 if res.get("type") == "access":
@@ -184,16 +239,30 @@ class ASearcherLightWorkflow(RolloutWorkflow):
                 else:
                     docs = res.get("documents") or []
                     event["tool_result_preview"] = "\n".join(docs[:2])[:300]
-
                 if "score" in res:
                     score = res["score"]
                     event["extracted_score"] = score
                 if "ground_truth" in res:
                     ground_truth = res["ground_truth"]
+            else:
+                logger.info(
+                    "Rollout no-tool qid=%s traj=%s turn=%s output_tokens=%s tail=%s",
+                    qid,
+                    traj_idx,
+                    agent.num_turns,
+                    len(resp.output_tokens),
+                    completion_str[-120:],
+                )
 
             step_events.append(event)
             if resp.output_tokens[-1] in [self.tokenizer.eos_token_id, self.tokenizer.pad_token_id]:
                 terminated_reason = "eos_or_pad"
+                logger.info(
+                    "Rollout stop qid=%s traj=%s turn=%s reason=eos_or_pad",
+                    qid,
+                    traj_idx,
+                    agent.num_turns,
+                )
                 break
 
         llm_gen_records = agent.memory.filter_records("llm_gen")
@@ -205,11 +274,24 @@ class ASearcherLightWorkflow(RolloutWorkflow):
             search=search_calls * self.search_step_penalty,
             access=access_calls * self.access_step_penalty,
             repeated=repeat_calls * self.repeated_action_penalty,
+            no_evidence=0.0,
+            no_access=0.0,
         )
+        if valid_inst and search_calls == 0 and access_calls == 0:
+            penalty_breakdown["no_evidence"] = self.no_evidence_penalty
+        if (
+            valid_inst
+            and self.search_client_type == "async-search-access"
+            and search_calls > 0
+            and access_calls == 0
+        ):
+            penalty_breakdown["no_access"] = self.no_access_penalty
         score = base_score
         score -= penalty_breakdown["search"]
         score -= penalty_breakdown["access"]
         score -= penalty_breakdown["repeated"]
+        score -= penalty_breakdown["no_evidence"]
+        score -= penalty_breakdown["no_access"]
 
         pred_answer = agent.get_answer()
         judge_q_invalid = False
@@ -231,6 +313,7 @@ class ASearcherLightWorkflow(RolloutWorkflow):
         )
         diagnostics = dict(
             qid=qid,
+            traj_idx=traj_idx,
             valid_inst=valid_inst,
             final_answer=pred_answer,
             base_score=base_score,
@@ -242,6 +325,17 @@ class ASearcherLightWorkflow(RolloutWorkflow):
             repeat_calls=repeat_calls,
             terminated_reason=terminated_reason,
             step_events=step_events,
+        )
+        logger.info(
+            "Rollout done qid=%s traj=%s turns=%s score=%s base_score=%s format_reward=%s reason=%s repeated=%s",
+            qid,
+            traj_idx,
+            len(llm_gen_records),
+            score,
+            base_score,
+            format_reward,
+            terminated_reason,
+            repeat_calls,
         )
         return ground_truth, score, agent.memory, stats, diagnostics
 
@@ -272,10 +366,11 @@ class ASearcherLightWorkflow(RolloutWorkflow):
                 return None
 
         version = engine.get_version()
+        logger.info("Episode start qid=%s version=%s question=%s", qid, version, data.get("question"))
         prompt_template = (
             SEARCH_ONLY_PROMPT_TEMPLATE if self.search_only else SEARCH_ACCESS_PROMPT_TEMPLATE
         )
-        prompt = prompt_template.format(question=data["question"])
+        prompt = prompt_template.replace("{question}", data["question"])
         valid_inst = np.random.uniform(0, 1) <= self.valid_inst_ratio
         if valid_inst:
             prompt = prompt.replace(INVALID_PROMPT, VALID_PROMPT)
@@ -283,8 +378,10 @@ class ASearcherLightWorkflow(RolloutWorkflow):
 
         trajs = await asyncio.gather(
             *[
-                self.collect_agent_trajectory(valid_inst, qid, prompt, prompt_token_ids, engine)
-                for _ in range(self.n_trajs)
+                self.collect_agent_trajectory(
+                    valid_inst, qid, prompt, prompt_token_ids, engine, traj_idx
+                )
+                for traj_idx in range(self.n_trajs)
             ]
         )
 
@@ -316,6 +413,14 @@ class ASearcherLightWorkflow(RolloutWorkflow):
             trace_payload["status"] = "discarded"
             trace_payload["reason"] = "all_normalized_scores_zero"
             trace_payload["trajectories"] = diagnostics
+            logger.info(
+                "Episode discarded qid=%s version=%s raw_scores=%s normalized_scores=%s reason=%s",
+                qid,
+                version,
+                raw_scores,
+                scores,
+                trace_payload["reason"],
+            )
             self._dump_episode_trace(version=version, qid=qid, payload=trace_payload)
             return None
 
@@ -372,7 +477,8 @@ class ASearcherLightWorkflow(RolloutWorkflow):
 
         if self.dump_dir is not None:
             os.makedirs(os.path.join(self.dump_dir, str(version)), exist_ok=True)
-            with open(os.path.join(self.dump_dir, str(version), f"{qid}.jsonl"), "w") as file_obj:
+            jsonl_path = os.path.join(self.dump_dir, str(version), f"{qid}.jsonl")
+            with open(jsonl_path, "w") as file_obj:
                 for i, (traj_memory, raw_score) in enumerate(zip(traj_memories, raw_scores)):
                     file_obj.write(
                         json.dumps(
@@ -385,15 +491,37 @@ class ASearcherLightWorkflow(RolloutWorkflow):
                         )
                         + "\n"
                     )
+            logger.info(
+                "Episode dump qid=%s version=%s jsonl_path=%s trajs=%s raw_scores=%s",
+                qid,
+                version,
+                jsonl_path,
+                len(traj_memories),
+                raw_scores,
+            )
         self._dump_episode_trace(version=version, qid=qid, payload=trace_payload)
+        logger.info(
+            "Episode trace qid=%s version=%s trace_dir=%s normalized_scores=%s",
+            qid,
+            version,
+            self.dump_dir,
+            scores,
+        )
 
-        return concat_padded_tensors(results)
+        return concat_padded_tensors([dict(td) for td in results])
 
 
 @dataclass
 class AgentLightRLConfig(GRPOConfig):
+    async_training: bool = field(
+        default=True, metadata={"help": "Whether to decouple rollout from training"}
+    )
     max_turns: int = field(default=12, metadata={"help": "Maximum number of turns"})
     n_trajs: int = field(default=4, metadata={"help": "Trajectories per query"})
+    search_only: bool = field(
+        default=False,
+        metadata={"help": "If true, use the search-only prompt instead of search+access"},
+    )
     search_client_type: str = field(
         default="async-search-access",
         metadata={"help": "Tool client type"},
@@ -443,6 +571,13 @@ class AgentLightRLConfig(GRPOConfig):
     repeated_action_penalty: float = field(
         default=0.02, metadata={"help": "Penalty for repeated actions"}
     )
+    no_evidence_penalty: float = field(
+        default=0.2, metadata={"help": "Penalty when the agent answers without any search/access"}
+    )
+    no_access_penalty: float = field(
+        default=0.1,
+        metadata={"help": "Penalty when the agent searches but answers without opening a result URL"},
+    )
 
 
 def get_search_dataset(dataset_path, rank, world_size):
@@ -457,7 +592,7 @@ def main(args):
     tokenizer = load_hf_tokenizer(config.tokenizer_path)
 
     seeding.set_random_seed(config.seed, key=f"trainer{rank}")
-    allocation_mode = AllocationMode.from_str(config.allocation_mode)
+    allocation_mode = _AllocationMode.from_str(config.allocation_mode)
     parallel_strategy = allocation_mode.train
 
     actor = FSDPPPOActor(config=config.actor)
@@ -481,11 +616,12 @@ def main(args):
     rollout.initialize(train_data_parallel_size=parallel_strategy.dp_size)
     actor.initialize(None, ft_spec)
 
-    weight_update_meta = [
-        WeightUpdateMeta.from_fsdp_nccl(AllocationMode.from_str(config.allocation_mode), actor)
-    ]
-    dist.broadcast_object_list(weight_update_meta, src=0)
-    weight_update_meta = weight_update_meta[0]
+    weight_update_meta = WeightUpdateMeta.from_disk(
+        config.experiment_name,
+        config.trial_name,
+        config.cluster.fileroot,
+    )
+    actor.connect_engine(rollout, weight_update_meta)
 
     if tokenizer.pad_token_id not in config.gconfig.stop_token_ids:
         config.gconfig.stop_token_ids.append(tokenizer.pad_token_id)
@@ -504,6 +640,7 @@ def main(args):
         topk=config.topk,
         valid_inst_ratio=config.valid_inst_ratio,
         max_tokens=config.actor.mb_spec.max_tokens_per_mb,
+        search_only=config.search_only,
         max_doc_chars=config.max_doc_chars,
         max_page_total_chars=config.max_page_total_chars,
         max_page_chunk_chars=config.max_page_chunk_chars,
@@ -513,10 +650,12 @@ def main(args):
         search_step_penalty=config.search_step_penalty,
         access_step_penalty=config.access_step_penalty,
         repeated_action_penalty=config.repeated_action_penalty,
+        no_evidence_penalty=config.no_evidence_penalty,
+        no_access_penalty=config.no_access_penalty,
     )
 
     saver = Saver(config.saver, ft_spec)
-    stats_logger = StatsLogger(config.stats_logger, ft_spec)
+    stats_logger = StatsLogger(config, ft_spec)
     evaluator = Evaluator(config.evaluator, ft_spec)
     recover_handler = RecoverHandler(config.recover, ft_spec)
     recover_info = recover_handler.load(
@@ -557,7 +696,7 @@ def main(args):
                     data_generator = iter(train_dataloader)
                     data = next(data_generator)
                 batch = rollout.rollout_batch(data, workflow=workflow)
-            batch = batch.to(actor.device)
+            batch = tensor_container_to(batch, actor.device)
             batch = broadcast_tensor_container(
                 batch,
                 src_rank=actor.current_data_parallel_head(),
@@ -569,11 +708,13 @@ def main(args):
 
         if config.actor.recompute_logprob or config.actor.use_decoupled_loss:
             with stats_tracker.record_timing("recompute_logp"):
-                batch["prox_logp"] = actor.compute_logp(batch)
+                prox_logps = actor.compute_logp(batch)
+                for traj, logp in zip(batch, prox_logps):
+                    traj["prox_logp"] = logp
                 log_gpu_stats("recompute logp")
 
         with stats_tracker.record_timing("compute_advantage"):
-            actor.compute_advantages(batch)
+            batch = actor.compute_advantages(batch)
             log_gpu_stats("compute advantages")
 
         gc.collect()
@@ -584,13 +725,6 @@ def main(args):
             stats_tracker.record_timing("train_step"),
             stats_tracker.scope("grpo_actor"),
         ):
-            if config.log_agent_stats:
-                agent_denominator = (batch["begin_of_trajectory"] > 0).bool()
-                stats_tracker.denominator(agent=agent_denominator)
-                stats_tracker.stat(
-                    **{k: batch[k].float() for k in config.log_agent_stats_keys},
-                    denominator="agent",
-                )
             actor.ppo_update(batch)
             actor.step_lr_scheduler()
             log_gpu_stats("actor update")
@@ -598,15 +732,13 @@ def main(args):
         rollout.pause()
 
         with stats_tracker.record_timing("update_weights"):
-            if dist.get_rank() == 0:
-                future = rollout.update_weights(weight_update_meta)
-            actor.upload_weights(weight_update_meta)
-            if dist.get_rank() == 0:
-                future.result()
+            new_version = global_step + 1
+            versioned_meta = weight_update_meta.with_version(new_version)
+            actor.update_weights(versioned_meta)
             dist.barrier(device_ids=[actor.device.index])
             current_platform.synchronize()
-            actor.set_version(global_step + 1)
-            rollout.set_version(global_step + 1)
+            actor.set_version(new_version)
+            rollout.set_version(new_version)
 
         with stats_tracker.record_timing("save"):
             saver.save(actor, epoch, step, global_step, tokenizer=tokenizer)
@@ -619,12 +751,16 @@ def main(args):
                 evaluator,
                 stats_logger,
                 train_dataloader,
-                inference_engine=rollout,
             )
 
-        stats_logger.log(step_info=step_info)
-        evaluator.evaluate(step_info=step_info)
+        stats = [stats_tracker.export_all(reduce_group=actor.data_parallel_group)]
+        stats_logger.commit(epoch, step, global_step, stats)
+        evaluator.evaluate(lambda: None, epoch, step, global_step)
         rollout.resume()
+
+    stats_logger.close()
+    rollout.destroy()
+    actor.destroy()
 
 
 if __name__ == "__main__":

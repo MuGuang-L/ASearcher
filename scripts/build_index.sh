@@ -1,22 +1,33 @@
 #!/bin/bash
+set -euo pipefail
 
-save_dir=$WIKI2018_WORK_DIR
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WIKI2018_WORK_DIR="${WIKI2018_WORK_DIR:-${1:-}}"
 
-corpus_file=$WIKI2018_WORK_DIR/wiki_corpus.jsonl
-save_dir=${save_dir}/e5.index
-retriever_name=e5 # this is for indexing naming
-retriever_model=intfloat__e5-base-v2
+if [[ -z "${WIKI2018_WORK_DIR}" ]]; then
+  echo "Usage: WIKI2018_WORK_DIR=/path/to/wiki2018 bash scripts/build_index.sh" >&2
+  echo "   or: bash scripts/build_index.sh /path/to/wiki2018" >&2
+  exit 1
+fi
 
-# change faiss_type to HNSW32/64/128 for ANN indexing
-# change retriever_name to bm25 for BM25 indexing
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 python3 utils/index_builder.py \
-    --retrieval_method $retriever_name \
-    --model_path $retriever_model \
-    --corpus_path $corpus_file \
-    --save_dir $save_dir \
-    --use_fp16 \
-    --max_length 256 \
-    --batch_size 512 \
-    --pooling_method mean \
-    --faiss_type Flat \
-    --save_embedding
+CORPUS_FILE="${CORPUS_FILE:-${WIKI2018_WORK_DIR}/wiki_corpus.jsonl}"
+SAVE_DIR="${SAVE_DIR:-${WIKI2018_WORK_DIR}/e5.index}"
+RETRIEVER_NAME="${RETRIEVER_NAME:-e5}"
+RETRIEVER_MODEL="${RETRIEVER_MODEL:-intfloat__e5-base-v2}"
+FAISS_TYPE="${FAISS_TYPE:-Flat}"
+BATCH_SIZE="${BATCH_SIZE:-512}"
+MAX_LENGTH="${MAX_LENGTH:-256}"
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
+export CUDA_VISIBLE_DEVICES
+
+python3 "${ROOT_DIR}/utils/index_builder.py" \
+  --retrieval_method "${RETRIEVER_NAME}" \
+  --model_path "${RETRIEVER_MODEL}" \
+  --corpus_path "${CORPUS_FILE}" \
+  --save_dir "${SAVE_DIR}" \
+  --use_fp16 \
+  --max_length "${MAX_LENGTH}" \
+  --batch_size "${BATCH_SIZE}" \
+  --pooling_method mean \
+  --faiss_type "${FAISS_TYPE}" \
+  --save_embedding

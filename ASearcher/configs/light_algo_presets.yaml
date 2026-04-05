@@ -1,0 +1,107 @@
+supported_light_algorithms:
+  grpo:
+    actor:
+      reward_norm:
+        mean_level: group
+        std_level: group
+        group_size: ${gconfig.n_samples}
+      adv_norm:
+        mean_level: batch
+        std_level: batch
+
+  gspo:
+    actor:
+      reward_norm:
+        mean_level: group
+        std_level: group
+        group_size: ${gconfig.n_samples}
+      adv_norm:
+        mean_level: batch
+        std_level: batch
+      importance_sampling_level: sequence
+
+  drgrpo:
+    actor:
+      reward_norm:
+        mean_level: group
+        std_level: null
+        group_size: ${gconfig.n_samples}
+      adv_norm:
+        mean_level: batch
+        std_level: batch
+
+  liteppo:
+    actor:
+      reward_norm:
+        mean_level: group
+        std_level: batch
+        group_size: ${gconfig.n_samples}
+      adv_norm:
+        mean_level: batch
+        std_level: batch
+
+  rloo:
+    actor:
+      reward_norm:
+        mean_level: group
+        mean_leave1out: true
+        std_level: null
+        group_size: ${gconfig.n_samples}
+      adv_norm:
+        mean_level: batch
+        std_level: batch
+
+  reinforce_plus_plus:
+    actor:
+      kl_ctl: 0.001
+      kl_estimator: k1
+      adv_norm:
+        mean_level: batch
+        std_level: batch
+      reward_norm: null
+
+  reinforce_baseline:
+    actor:
+      kl_ctl: 0.001
+      kl_estimator: k2
+      reward_norm:
+        mean_level: group
+        std_level: null
+        group_size: ${gconfig.n_samples}
+      adv_norm:
+        mean_level: batch
+        std_level: batch
+
+  sapo:
+    actor:
+      reward_norm:
+        mean_level: group
+        std_level: group
+        group_size: ${gconfig.n_samples}
+      adv_norm:
+        mean_level: batch
+        std_level: batch
+      recompute_logprob: false
+      use_decoupled_loss: false
+      use_sapo_loss: true
+      sapo_tau_pos: 1.0
+      sapo_tau_neg: 1.05
+
+  dapo:
+    actor:
+      reward_norm:
+        mean_level: group
+        std_level: group
+        group_size: ${gconfig.n_samples}
+      adv_norm:
+        mean_level: batch
+        std_level: batch
+      eps_clip: 0.2
+      eps_clip_higher: 0.28
+      overlong_reward_penalty: true
+      overlong_tokens: 512
+      overlong_penalty_factor: 1.0
+
+unsupported_in_light_trainer:
+  ppo: requires critic wiring in the training workflow, which asearcher_light.py does not currently instantiate
+  m2po: no light-trainer integration path is wired here

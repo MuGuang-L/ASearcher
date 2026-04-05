@@ -141,7 +141,7 @@ launcher:
     mount: /storage:/storage # mount share storage if necessary
     trainer_image: AReaL_Lite_Image
     inference_server_image: AReaL_Lite_Image
-  trainer_env_vars: PYTHONPATH=path_to_asearcher:path_to_areal,WANDB_API_KEY=your_wandb_api_key,SERPER_API_KEY=your_serper_api_key
+  trainer_env_vars: PYTHONPATH=/home/ubuntu/ASearcher:/home/ubuntu/ASearcher/AReaL,SERPER_API_KEY=your_serper_api_key,JINA_API_KEY=your_jina_api_key
 
 max_turns: 32
 n_trajs: 16

@@ -13,7 +13,7 @@ from datasets.distributed import split_dataset_by_node
 from tensordict import TensorDict
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import PreTrainedTokenizerFast
-from areal.platforms import current_platform
+from areal import current_platform
 from areal.utils.evaluator import Evaluator
 from areal.utils.hf_utils import load_hf_tokenizer
 from areal.utils.recover import RecoverHandler
@@ -22,6 +22,7 @@ from typing import List
 
 import hashlib
 
+from areal.api.alloc_mode import _AllocationMode
 from areal.api.cli_args import (
     GenerationHyperparameters,
     GRPOConfig,
@@ -29,7 +30,6 @@ from areal.api.cli_args import (
     InferenceEngineConfig,
 )
 from areal.api.io_struct import (
-    AllocationMode,
     FinetuneSpec,
     ModelRequest,
     WeightUpdateMeta,
@@ -37,15 +37,22 @@ from areal.api.io_struct import (
 )
 from areal.api.workflow_api import RolloutWorkflow
 from areal.api.cli_args import GRPOConfig
-from areal.engine.ppo.actor import FSDPPPOActor
+from areal.engine.fsdp_engine import FSDPPPOActor
 from areal.engine.sglang_remote import RemoteSGLangEngine
-from areal.utils.data import concat_padded_tensors, broadcast_tensor_container
-from areal.utils.device import log_gpu_stats
+from areal.utils.data import (
+    concat_padded_tensors,
+    broadcast_tensor_container,
+    tensor_container_to,
+)
 from areal.utils.saver import Saver
 from areal.utils.stats_logger import StatsLogger
 from areal.utils import seeding, logging, stats_tracker
 from areal.experimental.openai import ArealOpenAI
-from areal.utils.redistributor import redistribute
+try:
+    from areal.utils.device import log_gpu_stats
+except ImportError:
+    def log_gpu_stats(*args, **kwargs):
+        return None
 
 import sys
 from pathlib import Path
@@ -251,7 +258,7 @@ def main(args):
     tokenizer = load_hf_tokenizer(config.tokenizer_path)
 
     seeding.set_random_seed(config.seed, key=f"trainer{rank}")
-    allocation_mode = AllocationMode.from_str(config.allocation_mode)
+    allocation_mode = _AllocationMode.from_str(config.allocation_mode)
     parallel_strategy = allocation_mode.train
 
     # Initialize train engine
@@ -284,16 +291,12 @@ def main(args):
     actor.initialize(None, ft_spec)
     ref = None
 
-    # NOTE: Weight update meta only requires address and free port of rank 0,
-    # but `WeightUpdateMeta.from_fsdp_nccl` has to be executed on all ranks
-    # due to `engine.get_param_specs()`.
-    # Therefore, we create weight update meta on all ranks, then broadcast the one on rank 0.
-
     weight_update_meta = WeightUpdateMeta.from_disk(
             config.experiment_name,
             config.trial_name,
             config.cluster.fileroot
         )
+    actor.connect_engine(rollout, weight_update_meta)
 
     # Create rollout workflow
     if tokenizer.pad_token_id not in config.gconfig.stop_token_ids:
@@ -318,7 +321,7 @@ def main(args):
 
     # Run training.
     saver = Saver(config.saver, ft_spec)
-    stats_logger = StatsLogger(config.stats_logger, ft_spec)
+    stats_logger = StatsLogger(config, ft_spec)
     evaluator = Evaluator(config.evaluator, ft_spec)
 
     # Recover
@@ -370,8 +373,7 @@ def main(args):
                         workflow=workflow,
                         should_accept=lambda sample: True,
                     )
-                batch = batch.to(actor.device)
-                batch = redistribute(batch, group=actor.data_parallel_group).data
+                batch = tensor_container_to(batch, actor.device)
             batch = broadcast_tensor_container(
                 batch,
                 src_rank=actor.current_data_parallel_head(),
@@ -383,32 +385,27 @@ def main(args):
 
         if config.actor.recompute_logprob or config.actor.use_decoupled_loss:
             with stats_tracker.record_timing("recompute_logp"):
-                logp = actor.compute_logp(batch)
-                batch["prox_logp"] = logp
+                logps = actor.compute_logp(batch)
+                for traj, logp in zip(batch, logps):
+                    traj["prox_logp"] = logp
                 log_gpu_stats("recompute logp")
 
         if ref is not None:
             with stats_tracker.record_timing("ref_logp"):
-                batch["ref_logp"] = ref.compute_logp(batch)
+                ref_logps = ref.compute_logp(batch)
+                for traj, ref_logp in zip(batch, ref_logps):
+                    traj["ref_logp"] = ref_logp
                 log_gpu_stats("ref logp")
 
         with stats_tracker.record_timing("compute_advantage"):
-            actor.compute_advantages(batch)
+            batch = actor.compute_advantages(batch)
             log_gpu_stats("compute advantages")
 
         with (
             stats_tracker.record_timing("train_step"),
             stats_tracker.scope("grpo_actor"),
         ):
-            if config.log_agent_stats:
-                agent_denominator = (batch["begin_of_trajectory"] > 0).bool()
-                stats_tracker.denominator(agent=agent_denominator)
-                stats_tracker.stat(
-                    **{k: batch[k].float() for k in config.log_agent_stats_keys},
-                    denominator="agent",
-                )
-
-            stats = actor.ppo_update(batch)
+            actor.ppo_update(batch)
             actor.step_lr_scheduler()
             log_gpu_stats("actor update")
 
@@ -416,16 +413,14 @@ def main(args):
         rollout.pause()
 
         with stats_tracker.record_timing("update_weights"):
-            if dist.get_rank() == 0:
-                future = rollout.update_weights(weight_update_meta)
-            actor.upload_weights(weight_update_meta)
-            if dist.get_rank() == 0:
-                future.result()
+            new_version = global_step + 1
+            versioned_meta = weight_update_meta.with_version(new_version)
+            actor.update_weights(versioned_meta)
             dist.barrier(device_ids=[actor.device.index])
             current_platform.synchronize()
 
-            actor.set_version(global_step + 1)
-            rollout.set_version(global_step + 1)
+            actor.set_version(new_version)
+            rollout.set_version(new_version)
 
         with stats_tracker.record_timing("save"):
             saver.save(actor, epoch, step, global_step, tokenizer=tokenizer)
@@ -445,9 +440,7 @@ def main(args):
         current_platform.synchronize()
 
         # Upload statistics to the logger (e.g., wandb)
-        stats[0].update(
-            stats_tracker.export_all(reduce_group=actor.data_parallel_group)
-        )
+        stats = [stats_tracker.export_all(reduce_group=actor.data_parallel_group)]
         stats_logger.commit(epoch, step, global_step, stats)
 
         dist.barrier(device_ids=[actor.device.index])

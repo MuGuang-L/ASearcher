@@ -1,4 +1,5 @@
 import queue
+import json
 import re
 from dataclasses import asdict, dataclass
 from typing import Dict, List, Optional
@@ -129,7 +130,7 @@ class SearchAgentLight:
 
     def prepare_llm_query(self, tokenizer):
         prompt_token_ids = self.memory.prepare_prompt_token_ids()
-        sampling_params = dict(stop=["</search>", "</access>", "</answer>"])
+        sampling_params = dict(stop=["</tool_call>", "</search>", "</access>", "</answer>"])
         if not self.summary_job_queue.empty():
             summary_job = self.summary_job_queue.get_nowait()
             if summary_job["type"] in ["search_results", "webpage"]:
@@ -171,6 +172,13 @@ class SearchAgentLight:
         self.memory.add_record(record)
 
         tool_calls = []
+
+        tool_call_matches = re.findall(r"<tool_call>(.*?)</tool_call>", completion_text, re.DOTALL)
+        for match in tool_call_matches:
+            normalized = self._normalize_structured_tool_call(match)
+            if normalized is not None:
+                tool_calls.append(normalized)
+
         for pattern in [
             r"<search>(.*?)</search>",
             r"<access>(.*?)</access>",
@@ -178,8 +186,45 @@ class SearchAgentLight:
         ]:
             matches = re.findall(pattern, completion_text, re.DOTALL)
             if matches:
-                tool_calls.append(str(pattern.replace("(.*?)", matches[-1])))
+                candidate = str(pattern.replace("(.*?)", matches[-1]))
+                tool_calls.append(self._normalize_legacy_tool_call(candidate))
         return tool_calls
+
+    def _normalize_structured_tool_call(self, payload: str):
+        try:
+            call = json.loads(payload.strip())
+        except Exception:
+            return None
+
+        name = str(call.get("name", "")).strip().lower()
+        arguments = call.get("arguments", {}) or {}
+        if name == "search":
+            query = arguments.get("query")
+            if isinstance(query, list):
+                query = next((q for q in query if isinstance(q, str) and q.strip()), None)
+            if isinstance(query, str) and query.strip():
+                return self._normalize_legacy_tool_call(f"<search>{query.strip()}</search>")
+        if name in {"visit", "access"}:
+            url = arguments.get("url")
+            if isinstance(url, list):
+                url = next((u for u in url if isinstance(u, str) and u.strip()), None)
+            if isinstance(url, str) and url.strip():
+                return self._normalize_legacy_tool_call(f"<access>{url.strip()}</access>")
+        return None
+
+    def _normalize_legacy_tool_call(self, tool_call: str):
+        if tool_call.startswith("<search>") and tool_call.endswith("</search>"):
+            query = tool_call[len("<search>") : -len("</search>")].strip()
+            if re.match(r"^https?://", query):
+                return f"<access>{query}</access>"
+            return f"<search>{query}</search>"
+        if tool_call.startswith("<access>") and tool_call.endswith("</access>"):
+            url = tool_call[len("<access>") : -len("</access>")].strip()
+            return f"<access>{url}</access>"
+        if tool_call.startswith("<answer>") and tool_call.endswith("</answer>"):
+            answer = tool_call[len("<answer>") : -len("</answer>")].strip()
+            return f"<answer>{answer}</answer>"
+        return tool_call
 
     def consume_tool_response(self, res, topk=3):
         if res["type"] == "search":
@@ -189,6 +234,11 @@ class SearchAgentLight:
 
             if documents:
                 doc_id_template = "[Doc {doc_id}]({url}):\n"
+                access_hint = (
+                    "\n\nIf a snippet is insufficient, open one of these exact URLs with "
+                    "<access> url </access> or "
+                    '<tool_call>{"name": "visit", "arguments": {"url": "exact_url"}}</tool_call>.'
+                )
                 text = (
                     "<information>\n"
                     + "\n\n".join(
@@ -198,6 +248,7 @@ class SearchAgentLight:
                             for i, (doc, url) in enumerate(zip(documents, urls))
                         ]
                     )
+                    + access_hint
                     + "\n</information>"
                 )
             else:

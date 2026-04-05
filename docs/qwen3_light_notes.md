@@ -5,13 +5,13 @@ This note explains how to think about Qwen3 in the lightweight ASearcher setup.
 ## 1. Why there is no `enable_thinking` flag in `asearcher_light.py`
 
 The lightweight training entry at
-[ASearcher/train/asearcher_light.py](/Users/longjianhao/mo/ASearcher/ASearcher/train/asearcher_light.py)
+[ASearcher/train/asearcher_light.py](/home/ubuntu/ASearcher/ASearcher/train/asearcher_light.py)
 does **not** call `tokenizer.apply_chat_template(...)`.
 
 Instead, it directly tokenizes the plain prompt string:
 
 - prompt construction happens in
-  [ASearcher/train/asearcher_light.py](/Users/longjianhao/mo/ASearcher/ASearcher/train/asearcher_light.py)
+  [ASearcher/train/asearcher_light.py](/home/ubuntu/ASearcher/ASearcher/train/asearcher_light.py)
 - tokenization happens via `tokenizer(prompt, add_special_tokens=False)`
 
 Because of that, the official `Qwen3` chat-template switch
@@ -42,7 +42,7 @@ Because of that, the official `Qwen3` chat-template switch
 
 Use the dedicated config:
 
-- [ASearcher/configs/asearcher_local_light_qwen3.yaml](/Users/longjianhao/mo/ASearcher/ASearcher/configs/asearcher_local_light_qwen3.yaml)
+- [ASearcher/configs/asearcher_local_light_qwen3.yaml](/home/ubuntu/ASearcher/ASearcher/configs/asearcher_local_light_qwen3.yaml)
 
 Or use the flexible config and override the model path:
 
