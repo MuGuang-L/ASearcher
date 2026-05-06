@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# ASearcher可视化演示服务启动脚本
-# 
+# ASearcher 交互式网页 demo 启动脚本
+#
 # 使用方法:
 # ./start_visual_demo.sh [vLLM服务器URL] [模型名称] [端口] [主机地址] [启用reload]
 #
@@ -22,7 +22,7 @@ PORT=${3:-$DEFAULT_PORT}
 HOST=${4:-$DEFAULT_HOST}
 ENABLE_RELOAD=${5:-"false"}
 
-echo "🚀 启动ASearcher可视化演示服务"
+echo "🚀 启动 ASearcher 交互式 Demo 服务"
 echo "=================================================="
 echo "服务地址: http://$HOST:$PORT"
 echo "vLLM服务器: $VLLM_URL"
@@ -91,9 +91,9 @@ if [ "$ENABLE_RELOAD" = "true" ]; then
     CMD_ARGS+=(--reload)
 fi
 
-echo "启动命令: python3 asearcher_visual_demo.py ${CMD_ARGS[*]}"
+echo "启动命令: python3 asearcher_demo.py ${CMD_ARGS[*]}"
 echo ""
 
-python3 asearcher_visual_demo.py "${CMD_ARGS[@]}"
+python3 asearcher_demo.py "${CMD_ARGS[@]}"
 
 echo "👋 服务已停止"
